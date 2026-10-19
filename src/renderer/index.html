@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+  <title>과즙 10%</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <img src="assets/mascot.png" alt="" class="brand-mascot">
+      <span class="brand-name">과즙 10%</span>
+      <span id="file-name" class="file-name"></span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-help" class="btn" title="단축키 보기 (?)">단축키</button>
+      <button id="btn-open" class="btn" title="열기 (⌘O)">열기</button>
+      <button id="btn-compare" class="btn" title="누르고 있는 동안 원본 표시 (\)" disabled>원본 비교</button>
+      <button id="btn-restore" class="btn" title="모든 변형 되돌리기" disabled>모두 복원</button>
+      <button id="btn-save" class="btn primary" title="저장 (⌘S)" disabled>저장</button>
+    </div>
+  </header>
+
+  <div id="body">
+    <aside id="toolbar"></aside>
+
+    <main id="stage">
+      <canvas id="gl"></canvas>
+      <canvas id="overlay"></canvas>
+      <div id="empty">
+        <img src="assets/mascot.png" alt="" class="empty-mascot">
+        <div class="empty-title">오렌지 10%면 오렌지주스, 보정해도 나야 🍊</div>
+        <div class="empty-sub">사진을 끌어다 놓거나 열기 버튼을 눌러 시작해 봐. 조금 달라도 여전히 너니까.</div>
+        <button id="btn-open-empty" class="btn primary big">사진 고르기</button>
+        <div class="empty-hint">JPG · PNG · HEIC · TIFF · WebP</div>
+      </div>
+      <div id="drop-hint">여기에 놓으면 열립니다</div>
+    </main>
+
+    <aside id="panel">
+      <section class="group">
+        <h3>브러시</h3>
+        <div class="row" data-opt="size">
+          <label>크기 <span class="unit">px</span></label>
+          <input type="range" min="5" max="2000" step="1">
+          <input type="number" min="1" max="8000" step="1">
+        </div>
+        <div class="row" data-opt="pressure">
+          <label>압력</label>
+          <input type="range" min="1" max="100" step="1">
+          <input type="number" min="1" max="100" step="1">
+        </div>
+        <div class="row" data-opt="density">
+          <label>밀도</label>
+          <input type="range" min="0" max="100" step="1">
+          <input type="number" min="0" max="100" step="1">
+        </div>
+        <div class="row" data-opt="rate">
+          <label>속도</label>
+          <input type="range" min="1" max="100" step="1">
+          <input type="number" min="1" max="100" step="1">
+        </div>
+        <label class="check"><input type="checkbox" id="chk-pen" checked> 펜 태블릿 필압 반영</label>
+        <div class="hint">[ ] 키로 크기 조절 · 밀도가 높을수록 가장자리가 단단합니다</div>
+      </section>
+
+      <section class="group">
+        <h3>마스크</h3>
+        <label class="check"><input type="checkbox" id="chk-mask" checked> 고정 영역 표시</label>
+        <button id="btn-thaw-all" class="btn small" disabled>마스크 모두 해제</button>
+      </section>
+
+      <section class="group">
+        <h3>색 보정</h3>
+        <div class="row" data-color="exposure">
+          <label>노출</label>
+          <input type="range" min="-3" max="3" step="0.05">
+          <input type="number" min="-3" max="3" step="0.05">
+        </div>
+        <div class="row" data-color="contrast">
+          <label>대비</label>
+          <input type="range" min="-100" max="100" step="1">
+          <input type="number" min="-100" max="100" step="1">
+        </div>
+        <div class="row" data-color="saturation">
+          <label>채도</label>
+          <input type="range" min="-100" max="100" step="1">
+          <input type="number" min="-100" max="100" step="1">
+        </div>
+        <div class="row" data-color="temperature">
+          <label>색온도</label>
+          <input type="range" min="-100" max="100" step="1">
+          <input type="number" min="-100" max="100" step="1">
+        </div>
+        <button id="btn-color-reset" class="btn small">색 보정 초기화</button>
+      </section>
+
+      <section class="group">
+        <h3>기록</h3>
+        <div class="btn-row">
+          <button id="btn-undo" class="btn small" title="⌘Z" disabled>실행 취소</button>
+          <button id="btn-redo" class="btn small" title="⇧⌘Z" disabled>다시 실행</button>
+        </div>
+        <div id="history-info" class="hint">획 단위 30단계</div>
+      </section>
+
+      <section class="group info">
+        <h3>정보</h3>
+        <div id="info-size" class="hint">—</div>
+        <div id="info-grid" class="hint"></div>
+      </section>
+    </aside>
+  </div>
+
+  <div id="help" hidden>
+    <div class="help-card" role="dialog" aria-label="단축키">
+      <div class="help-head">
+        <img src="assets/mascot.png" alt="" class="help-mascot">
+        <h2>단축키</h2>
+        <button id="btn-help-close" class="btn small">닫기</button>
+      </div>
+      <div class="help-cols">
+        <section>
+          <h3>도구</h3>
+          <dl>
+            <dt><kbd>W</kbd></dt><dd>뒤틀기</dd>
+            <dt><kbd>R</kbd></dt><dd>재구성</dd>
+            <dt><kbd>E</kbd></dt><dd>매끄럽게</dd>
+            <dt><kbd>S</kbd></dt><dd>오목</dd>
+            <dt><kbd>B</kbd></dt><dd>볼록</dd>
+            <dt><kbd>C</kbd></dt><dd>돌리기 · <kbd>⌥</kbd> 누르면 반시계</dd>
+            <dt><kbd>F</kbd></dt><dd>마스크 고정</dd>
+            <dt><kbd>D</kbd></dt><dd>마스크 해제</dd>
+            <dt><kbd>H</kbd></dt><dd>손 (화면 이동)</dd>
+          </dl>
+        </section>
+        <section>
+          <h3>브러시 · 보기</h3>
+          <dl>
+            <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>브러시 크기 줄이기 / 키우기</dd>
+            <dt><kbd>Space</kbd>+드래그</dt><dd>화면 이동</dd>
+            <dt><kbd>\</kbd></dt><dd>누르는 동안 원본 보기</dd>
+            <dt><kbd>⌘</kbd><kbd>+</kbd> / <kbd>⌘</kbd><kbd>−</kbd></dt><dd>확대 / 축소</dd>
+            <dt><kbd>⌘</kbd><kbd>0</kbd></dt><dd>화면에 맞춤</dd>
+            <dt><kbd>⌘</kbd><kbd>1</kbd></dt><dd>실제 크기 (100%)</dd>
+            <dt>핀치 · 두 손가락</dt><dd>확대·축소 · 이동</dd>
+          </dl>
+          <h3>파일 · 편집</h3>
+          <dl>
+            <dt><kbd>⌘</kbd><kbd>O</kbd></dt><dd>열기</dd>
+            <dt><kbd>⌘</kbd><kbd>S</kbd></dt><dd>저장</dd>
+            <dt><kbd>⌘</kbd><kbd>Z</kbd></dt><dd>실행 취소</dd>
+            <dt><kbd>⇧</kbd><kbd>⌘</kbd><kbd>Z</kbd></dt><dd>다시 실행</dd>
+            <dt><kbd>?</kbd></dt><dd>이 안내 열기 · <kbd>esc</kbd> 닫기</dd>
+          </dl>
+        </section>
+      </div>
+      <div class="hint">한글 입력 상태에서도 단축키가 동작합니다.</div>
+    </div>
+  </div>
+
+  <footer id="status">
+    <span id="status-tool"></span>
+    <span id="status-msg"></span>
+    <span id="status-zoom" class="right"></span>
+  </footer>
+</div>
+
+<script src="gl.js"></script>
+<script src="liquify.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
