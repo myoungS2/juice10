@@ -169,3 +169,8 @@ kbd {
   font: 700 11.5px/18px -apple-system, "Apple SD Gothic Neo", sans-serif; color: var(--text);
   background: #FFFFFF; border: 1.5px solid var(--border); border-bottom-width: 2.5px; border-radius: 6px;
 }
+
+.group h3 .h-key {
+  display: inline-block; margin-left: 4px; padding: 0 5px; font-size: 10px; line-height: 15px;
+  color: var(--muted); border: 1.5px solid var(--border); border-radius: 5px; vertical-align: 1px;
+}

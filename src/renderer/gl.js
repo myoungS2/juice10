@@ -2,7 +2,7 @@
 /* WebGL2 렌더러: 원본 텍스처를 변위장(d) 만큼 밀어서 샘플링한다. */
 
 const VS = `#version 300 es
-in vec2 aPos;                 // 0..1 (이미지 공간)
+layout(location = 0) in vec2 aPos;   // 0..1 (이미지 공간)
 uniform vec2 uOffset;         // 캔버스 px (백킹 버퍼 기준)
 uniform vec2 uCanvas;         // 캔버스 크기 px
 uniform vec2 uImgSize;        // 이미지 px
@@ -31,10 +31,26 @@ uniform float uExposure;      // EV
 uniform float uContrast;      // 배율
 uniform float uSaturation;    // 배율
 uniform float uTemp;          // -1..1
+uniform sampler2D uSmooth;    // 미리 계산한 경계 보존 부드러움(양방향 필터) 결과
+uniform sampler2D uSkin;      // 피부 보정 마스크 (원본 공간)
+uniform vec2 uImgSize;
+uniform float uSkinAmt;       // 0..1 보정 강도
+uniform float uSkinGrain;     // 0..1 질감 유지
+uniform float uShowSkin;      // 피부 칠한 영역 표시
 void main() {
   vec2 d = uShowOrig > 0.5 ? vec2(0.0) : texture(uDisp, vUv).rg;
   vec2 src = vUv + d / uGrid;
   vec3 c = texture(uImg, src).rgb;
+
+  // ---- 피부 보정: 원본 → (부드러움 + 미세 질감) 을 마스크만큼 섞는다 ----
+  vec2 g = src * uImgSize;
+  float lodNow = max(0.0, log2(max(max(length(dFdx(g)), length(dFdy(g))), 1e-6)));
+  vec3 fine = c - textureLod(uImg, src, lodNow + 1.0).rgb;   // 1~2px 미세 결 (모공 질감)
+  vec3 base = texture(uSmooth, src).rgb;
+  float skinM = clamp(texture(uSkin, src).r, 0.0, 1.0);
+  float k = uShowOrig > 0.5 ? 0.0 : skinM * uSkinAmt;
+  c = mix(c, base + fine * uSkinGrain, k);
+
   c *= exp2(uExposure);
   c = (c - 0.5) * uContrast + 0.5;
   float l = dot(c, vec3(0.299, 0.587, 0.114));
@@ -45,7 +61,47 @@ void main() {
     float m = texture(uMask, vUv).r;
     c = mix(c, vec3(1.0, 0.18, 0.18), clamp(m, 0.0, 1.0) * 0.45);
   }
+  if (uShowSkin > 0.5) {
+    // '칠한 영역 표시' — 보정 결과와 헷갈리지 않도록 파란색으로 표시
+    c = mix(c, vec3(0.16, 0.45, 1.0), skinM * 0.4);
+  }
   outColor = vec4(c, 1.0);
+}`;
+
+/*
+ * 경계 보존 부드러움(양방향 필터) — 사진을 불러올 때 한 번만 계산한다.
+ * 9×9 표본, 표본 간격 uSpacing(작업 해상도 px). 색 차이가 큰 곳(눈·입·윤곽)은 섞지 않아 경계를 지킨다.
+ */
+const BILATERAL_VS = `#version 300 es
+layout(location = 0) in vec2 aPos;
+out vec2 vUv;
+void main() { vUv = aPos; gl_Position = vec4(aPos * 2.0 - 1.0, 0.0, 1.0); }`;
+
+const BILATERAL_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;          // 1 / 작업 해상도
+uniform float uLod;           // 원본 → 작업 해상도 mip 레벨
+uniform float uSpacing;
+uniform float uSigmaR;
+void main() {
+  vec3 c0 = textureLod(uSrc, vUv, uLod).rgb;
+  vec3 sum = vec3(0.0);
+  float wsum = 0.0;
+  float inv2r = 1.0 / (2.0 * uSigmaR * uSigmaR);
+  for (int j = -4; j <= 4; j++) {
+    for (int i = -4; i <= 4; i++) {
+      vec2 o = vec2(float(i), float(j));
+      vec3 c = textureLod(uSrc, vUv + o * uSpacing * uTexel, uLod).rgb;
+      vec3 dc = c - c0;
+      // 색 차이는 채널 평균 제곱으로 본다: 잡티(차이 작음)는 섞고, 눈썹·입술·윤곽(차이 큼)은 지킨다
+      float w = exp(-dot(o, o) / 12.5) * exp(-dot(dc, dc) / 3.0 * inv2r);
+      sum += c * w; wsum += w;
+    }
+  }
+  outColor = vec4(sum / wsum, 1.0);
 }`;
 
 class Renderer {
@@ -75,19 +131,25 @@ class Renderer {
       img: u('uImg'), disp: u('uDisp'), mask: u('uMask'), grid: u('uGrid'),
       showOrig: u('uShowOrig'), showMask: u('uShowMask'),
       exposure: u('uExposure'), contrast: u('uContrast'), saturation: u('uSaturation'), temp: u('uTemp'),
+      smooth: u('uSmooth'), skin: u('uSkin'), imgSizeF: u('uImgSize'),
+      skinAmt: u('uSkinAmt'), skinGrain: u('uSkinGrain'), showSkin: u('uShowSkin'),
     };
+
+    this.bilProg = this._program(BILATERAL_VS, BILATERAL_FS);
+    const ub = (n) => gl.getUniformLocation(this.bilProg, n);
+    this.ub = { src: ub('uSrc'), texel: ub('uTexel'), lod: ub('uLod'), spacing: ub('uSpacing'), sigmaR: ub('uSigmaR') };
 
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(this.prog, 'aPos');
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
 
-    this.imgTex = null; this.dispTex = null; this.maskTex = null;
+    this.imgTex = null; this.dispTex = null; this.maskTex = null; this.skinTex = null; this.smoothTex = null;
+    this.smoothMs = 0;
     this.imgW = 0; this.imgH = 0;
     this.field = null;
     this.dispFormat = this.floatLinear ? 'RG32F' : 'RG16F';
@@ -138,6 +200,63 @@ class Renderer {
     this.imgTex = t;
     this.imgW = bitmap.width;
     this.imgH = bitmap.height;
+    this._buildSmooth();
+  }
+
+  _makeTarget(w, h) {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { tex, fbo };
+  }
+
+  /**
+   * 피부 보정용 부드러운 이미지를 미리 만든다 (긴 변 최대 2048 작업 해상도, 양방향 필터 2회).
+   * 필터 반경 ≈ 원본 긴 변의 0.6% → 사진 크기와 무관하게 같은 느낌.
+   */
+  _buildSmooth() {
+    const gl = this.gl;
+    const t0 = performance.now();
+    if (this.smoothTex) gl.deleteTexture(this.smoothTex);
+    const long = Math.max(this.imgW, this.imgH);
+    const s = Math.min(1, 2048 / long);
+    const w = Math.max(1, Math.round(this.imgW * s)), h = Math.max(1, Math.round(this.imgH * s));
+    const spacing = Math.max(1, 0.002 * Math.max(w, h));
+    const a = this._makeTarget(w, h), b = this._makeTarget(w, h);
+    gl.useProgram(this.bilProg);
+    gl.bindVertexArray(this.vao);
+    gl.viewport(0, 0, w, h);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(this.ub.src, 0);
+    gl.uniform2f(this.ub.texel, 1 / w, 1 / h);
+    gl.uniform1f(this.ub.spacing, spacing);
+    // 1회차: 원본(mip) → a
+    gl.bindFramebuffer(gl.FRAMEBUFFER, a.fbo);
+    gl.bindTexture(gl.TEXTURE_2D, this.imgTex);
+    gl.uniform1f(this.ub.lod, Math.max(0, Math.log2(1 / s)));
+    gl.uniform1f(this.ub.sigmaR, 0.15);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    // 2회차: a → b (경계 차이 기준을 조금 낮춰 한 번 더)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo);
+    gl.bindTexture(gl.TEXTURE_2D, a.tex);
+    gl.uniform1f(this.ub.lod, 0);
+    gl.uniform1f(this.ub.sigmaR, 0.12);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(a.fbo); gl.deleteFramebuffer(b.fbo);
+    gl.deleteTexture(a.tex);
+    this.smoothTex = b.tex;
+    gl.finish();
+    this.smoothMs = performance.now() - t0;
   }
 
   /** 변위장/마스크 텍스처 생성 */
@@ -146,6 +265,7 @@ class Renderer {
     this.field = field;
     if (this.dispTex) gl.deleteTexture(this.dispTex);
     if (this.maskTex) gl.deleteTexture(this.maskTex);
+    if (this.skinTex) gl.deleteTexture(this.skinTex);
 
     const mk = (internal, format, data) => {
       const t = gl.createTexture();
@@ -161,6 +281,7 @@ class Renderer {
     };
     this.dispTex = mk(this.floatLinear ? gl.RG32F : gl.RG16F, gl.RG, field.d);
     this.maskTex = mk(this.floatLinear ? gl.R32F : gl.R16F, gl.RED, field.mask);
+    this.skinTex = mk(this.floatLinear ? gl.R32F : gl.R16F, gl.RED, field.skin);
   }
 
   _uploadSub(tex, format, data, r) {
@@ -181,6 +302,7 @@ class Renderer {
 
   uploadDisp(r) { if (this.field) this._uploadSub(this.dispTex, this.gl.RG, this.field.d, r); }
   uploadMask(r) { if (this.field) this._uploadSub(this.maskTex, this.gl.RED, this.field.mask, r); }
+  uploadSkin(r) { if (this.field) this._uploadSub(this.skinTex, this.gl.RED, this.field.skin, r); }
 
   /** 대기 중인 변경 영역을 모두 업로드 */
   flushField() {
@@ -188,6 +310,7 @@ class Renderer {
     if (!f) return;
     const dr = f.takeDirty(); if (dr) this.uploadDisp(dr);
     const mr = f.takeMaskDirty(); if (mr) this.uploadMask(mr);
+    const sr = f.takeSkinDirty(); if (sr) this.uploadSkin(sr);
   }
 
   clear() {
@@ -205,9 +328,17 @@ class Renderer {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.imgTex);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.dispTex);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.smoothTex);
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.skinTex);
     gl.uniform1i(this.u.img, 0);
     gl.uniform1i(this.u.disp, 1);
     gl.uniform1i(this.u.mask, 2);
+    gl.uniform1i(this.u.smooth, 3);
+    gl.uniform1i(this.u.skin, 4);
+    const sk = o.skin || {};
+    gl.uniform1f(this.u.skinAmt, sk.amount ?? 0);
+    gl.uniform1f(this.u.skinGrain, sk.grain ?? 0.3);
+    gl.uniform1f(this.u.showSkin, o.showSkin ? 1 : 0);
     gl.uniform2f(this.u.offset, o.offsetX, o.offsetY);
     gl.uniform2f(this.u.canvas, o.canvasW, o.canvasH);
     gl.uniform2f(this.u.imgSize, this.imgW, this.imgH);
@@ -238,6 +369,7 @@ class Renderer {
       offsetX: o.offsetX, offsetY: o.offsetY, scale: o.scale,
       canvasW: this.canvas.width, canvasH: this.canvas.height, flip: 1,
       showOriginal: o.showOriginal, showMask: o.showMask, color: o.color,
+      skin: o.skin, showSkin: o.showSkin,
     });
   }
 
@@ -260,7 +392,7 @@ class Renderer {
   }
 
   /** 원본 해상도로 FBO 렌더 → RGBA 픽셀 (위→아래 순서) */
-  renderToPixels(color) {
+  renderToPixels(color, skin) {
     const gl = this.gl;
     this.flushField();
     const w = this.imgW, h = this.imgH;
@@ -281,7 +413,7 @@ class Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     this._drawQuad({
       offsetX: 0, offsetY: 0, scale: 1, canvasW: w, canvasH: h, flip: -1,
-      showOriginal: false, showMask: false, color,
+      showOriginal: false, showMask: false, color, skin, showSkin: false,
     });
     const data = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);

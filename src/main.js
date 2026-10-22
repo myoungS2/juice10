@@ -17,9 +17,23 @@ let rendererReady = false;
 let textFieldFocused = false;
 let interceptCount = 0;
 
+// ⌘ 조합 → 메뉴 동작 (물리 키 코드 기준이라 한글 입력 상태에서도 동작)
+function metaAction(code, shift) {
+  switch (code) {
+    case 'KeyZ': return shift ? 'redo' : 'undo';
+    case 'KeyO': return shift ? null : 'open';
+    case 'KeyS': return shift ? null : 'save';
+    case 'Equal': case 'NumpadAdd': return 'zoom-in';
+    case 'Minus': case 'NumpadSubtract': return 'zoom-out';
+    case 'Digit0': case 'Numpad0': return shift ? null : 'zoom-fit';
+    case 'Digit1': case 'Numpad1': return shift ? null : 'zoom-100';
+    default: return null;
+  }
+}
+
 // 메인 프로세스에서 가로채 렌더러로 보내는 단축키 (물리 키 코드)
 const SHORTCUT_CODES = new Set([
-  'KeyW', 'KeyR', 'KeyE', 'KeyS', 'KeyB', 'KeyC', 'KeyF', 'KeyD', 'KeyH',
+  'KeyW', 'KeyR', 'KeyE', 'KeyS', 'KeyB', 'KeyC', 'KeyF', 'KeyD', 'KeyH', 'KeyK',
   'BracketLeft', 'BracketRight', 'Backslash', 'Space', 'Slash', 'Escape',
 ]);
 const pendingOpen = [];
@@ -80,20 +94,22 @@ function buildMenu() {
     ...(isMac ? [{
       label: app.name,
       submenu: [
-        { role: 'about', label: 'Liquify 정보' },
+        { role: 'about', label: '과즙 10% 정보' },
         { type: 'separator' },
-        { role: 'hide', label: 'Liquify 가리기' },
+        { role: 'hide', label: '과즙 10% 가리기' },
         { role: 'hideOthers', label: '다른 앱 가리기' },
         { role: 'unhide', label: '모두 보기' },
         { type: 'separator' },
-        { role: 'quit', label: 'Liquify 종료' },
+        { role: 'quit', label: '과즙 10% 종료' },
       ],
     }] : []),
+    // ⌘ 단축키는 메뉴에 표시만 하고(registerAccelerator: false) 실제 처리는 before-input-event 에서 한다.
+    // 페이지가 키를 처리하면 메뉴 단축키가 막히고, 한글 입력 상태에서도 흔들리지 않게 하기 위함.
     {
       label: '파일',
       submenu: [
-        { label: '열기…', accelerator: 'CmdOrCtrl+O', click: () => sendMenu('open') },
-        { label: '저장…', accelerator: 'CmdOrCtrl+S', click: () => sendMenu('save') },
+        { label: '열기…', accelerator: 'CmdOrCtrl+O', registerAccelerator: false, click: () => sendMenu('open') },
+        { label: '저장…', accelerator: 'CmdOrCtrl+S', registerAccelerator: false, click: () => sendMenu('save') },
         { type: 'separator' },
         isMac ? { role: 'close', label: '창 닫기' } : { role: 'quit', label: '종료' },
       ],
@@ -101,20 +117,21 @@ function buildMenu() {
     {
       label: '편집',
       submenu: [
-        { label: '실행 취소', accelerator: 'CmdOrCtrl+Z', click: () => sendMenu('undo') },
-        { label: '다시 실행', accelerator: 'Shift+CmdOrCtrl+Z', click: () => sendMenu('redo') },
+        { label: '실행 취소', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenu('undo') },
+        { label: '다시 실행', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenu('redo') },
         { type: 'separator' },
         { label: '모두 복원', click: () => sendMenu('restore') },
         { label: '마스크 모두 해제', click: () => sendMenu('thaw-all') },
+        { label: '피부 보정 모두 지우기', click: () => sendMenu('skin-clear') },
       ],
     },
     {
       label: '보기',
       submenu: [
-        { label: '확대', accelerator: 'CmdOrCtrl+=', click: () => sendMenu('zoom-in') },
-        { label: '축소', accelerator: 'CmdOrCtrl+-', click: () => sendMenu('zoom-out') },
-        { label: '화면에 맞춤', accelerator: 'CmdOrCtrl+0', click: () => sendMenu('zoom-fit') },
-        { label: '실제 크기(100%)', accelerator: 'CmdOrCtrl+1', click: () => sendMenu('zoom-100') },
+        { label: '확대', accelerator: 'CmdOrCtrl+=', registerAccelerator: false, click: () => sendMenu('zoom-in') },
+        { label: '축소', accelerator: 'CmdOrCtrl+-', registerAccelerator: false, click: () => sendMenu('zoom-out') },
+        { label: '화면에 맞춤', accelerator: 'CmdOrCtrl+0', registerAccelerator: false, click: () => sendMenu('zoom-fit') },
+        { label: '실제 크기(100%)', accelerator: 'CmdOrCtrl+1', registerAccelerator: false, click: () => sendMenu('zoom-100') },
         { type: 'separator' },
         { label: '마스크 표시', type: 'checkbox', checked: true, click: (item) => sendMenu(item.checked ? 'mask-show' : 'mask-hide') },
         { type: 'separator' },
@@ -152,7 +169,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    title: 'Liquify',
+    title: '과즙 10%',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 14 },
     backgroundColor: '#FFF7E8',
@@ -171,7 +188,16 @@ function createWindow() {
   // 단축키가 동작하지 않을 수 있으므로, 물리 키(input.code) 기준으로 렌더러에 전달한다.
   win.webContents.on('before-input-event', (event, input) => {
     if (textFieldFocused) return;                      // 숫자 입력칸에 타이핑 중이면 그대로 둔다
-    if (input.meta || input.control) return;           // ⌘ 조합은 메뉴가 처리
+    if (input.meta || input.control) {
+      if (input.type !== 'keyDown' || input.alt) return;
+      const action = metaAction(input.code, input.shift);
+      if (!action) return;                             // ⌘Q·⌘W 등은 메뉴(role)가 그대로 처리
+      if (input.isAutoRepeat && (action === 'open' || action === 'save')) { event.preventDefault(); return; }
+      event.preventDefault();
+      interceptCount++;
+      sendMenu(action);
+      return;
+    }
     if (input.type !== 'keyDown' && input.type !== 'keyUp') return;
     if (!SHORTCUT_CODES.has(input.code)) return;
     event.preventDefault();
@@ -216,8 +242,40 @@ async function runSelftest() {
     await new Promise((r) => setTimeout(r, 100));
     await press('W'); ipcCheck.W = await activeTool();
     ipcCheck.intercepted = interceptCount - before;
-    const ipcOk = ipcCheck.R === 'reconstruct' && ipcCheck.C === 'twirl' && ipcCheck.numberFocus_B === 'twirl'
-      && ipcCheck.W === 'warp' && ipcCheck.intercepted === 3;
+    // ⌘ 단축키 (실제 입력 경로)
+    const hist = () => wc.executeJavaScript(`document.querySelector('#history-info').textContent`);
+    const zoom = () => wc.executeJavaScript(`document.querySelector('#status-zoom').textContent`);
+    const metaPress = async (keyCode, mods = []) => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers: ['meta', ...mods] });
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers: ['meta', ...mods] });
+      await new Promise((r) => setTimeout(r, 150));
+    };
+    ipcCheck.histStart = await hist();
+    await metaPress('Z'); ipcCheck.afterCmdZ = await hist();
+    await metaPress('Z', ['shift']); ipcCheck.afterShiftCmdZ = await hist();
+    await metaPress('1'); ipcCheck.zoomCmd1 = await zoom();
+    await metaPress('0'); ipcCheck.zoomCmd0 = await zoom();
+    const undoNum = (t) => Number((t.match(/실행 취소 (\d+)단계/) || [])[1]);
+    const metaOk = undoNum(ipcCheck.afterCmdZ) === undoNum(ipcCheck.histStart) - 1
+      && undoNum(ipcCheck.afterShiftCmdZ) === undoNum(ipcCheck.histStart)
+      && ipcCheck.zoomCmd1 === '100%' && ipcCheck.zoomCmd0 !== '100%';
+    // '모두 복원' 버튼 실제 마우스 클릭 → 변형·피부·색 모두 0, ⌘Z 로 되살아나야 함
+    const st = () => wc.executeJavaScript(`window.__probeState()`);
+    const btn = await wc.executeJavaScript(`(() => { const r = document.querySelector('#btn-restore').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+    const r0 = await st();
+    wc.sendInputEvent({ type: 'mouseMove', x: btn.x, y: btn.y });
+    wc.sendInputEvent({ type: 'mouseDown', x: btn.x, y: btn.y, button: 'left', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: btn.x, y: btn.y, button: 'left', clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 250));
+    const r1 = await st();
+    await metaPress('Z');
+    const r2 = await st();
+    ipcCheck.restore = { before: r0, afterClick: r1, afterCmdZ: r2 };
+    const restoreOk = r0.maxD > 1 && r0.maxSkin > 0.5 && r0.exposure !== 0
+      && r1.maxD === 0 && r1.maxSkin === 0 && r1.exposure === 0 && r1.exposureSlider === 0 && r1.undo === r0.undo + 1
+      && Math.abs(r2.maxD - r0.maxD) < 1e-4 && Math.abs(r2.maxSkin - r0.maxSkin) < 1e-6 && r2.exposure === r0.exposure && r2.exposureSlider === r0.exposure;
+    const ipcOk = ipcCheck.R === 'reconstruct' && restoreOk && ipcCheck.C === 'twirl' && ipcCheck.numberFocus_B === 'twirl'
+      && ipcCheck.W === 'warp' && ipcCheck.intercepted === 3 && metaOk;
     report.steps.push(ipcOk ? { name: 'shortcuts-native', ...ipcCheck } : { name: 'shortcuts-native', fail: JSON.stringify(ipcCheck) });
     if (!ipcOk) report.ok = false;
 

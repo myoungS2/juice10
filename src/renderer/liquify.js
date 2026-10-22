@@ -26,9 +26,12 @@ class LiquifyField {
     this.sy = this.gh / imgH;
     const n = this.gw * this.gh;
     this.d = new Float32Array(n * 2);
-    this.mask = new Float32Array(n);     // 1 = 고정(frozen)
+    this.mask = new Float32Array(n);     // 1 = 고정(frozen)  — 출력(화면) 공간
+    this.skin = new Float32Array(n);     // 1 = 피부 보정 적용 — 원본 사진 공간 (변형을 따라 움직임)
     this.backupD = new Float32Array(n * 2);
     this.backupM = new Float32Array(n);
+    this.backupS = new Float32Array(n);
+    this.frameSkinDirty = null; this.strokeSkinDirty = null;
     this.scratch = new Float32Array(1024 * 2);
     this.frameDirty = null; this.frameMaskDirty = null;
     this.strokeDirty = null; this.strokeMaskDirty = null;
@@ -49,8 +52,13 @@ class LiquifyField {
     this.frameMaskDirty = unionRect(this.frameMaskDirty, x0, y0, x1, y1);
     this.strokeMaskDirty = unionRect(this.strokeMaskDirty, x0, y0, x1, y1);
   }
+  markSkinDirty(x0, y0, x1, y1) {
+    this.frameSkinDirty = unionRect(this.frameSkinDirty, x0, y0, x1, y1);
+    this.strokeSkinDirty = unionRect(this.strokeSkinDirty, x0, y0, x1, y1);
+  }
   takeDirty() { const r = this.frameDirty; this.frameDirty = null; return r; }
   takeMaskDirty() { const r = this.frameMaskDirty; this.frameMaskDirty = null; return r; }
+  takeSkinDirty() { const r = this.frameSkinDirty; this.frameSkinDirty = null; return r; }
 
   // ---------- 획(stroke) / 실행취소 ----------
   beginStroke() {
@@ -58,27 +66,30 @@ class LiquifyField {
     this.inStroke = true;
     this.backupD.set(this.d);
     this.backupM.set(this.mask);
-    this.strokeDirty = null; this.strokeMaskDirty = null;
+    this.backupS.set(this.skin);
+    this.strokeDirty = null; this.strokeMaskDirty = null; this.strokeSkinDirty = null;
     this.last = null;
   }
 
+  /** 획을 끝내고 실행 취소 항목을 만든다. 만든 항목(없으면 null)을 돌려준다. */
   endStroke() {
-    if (!this.inStroke) return false;
+    if (!this.inStroke) return null;
     this.inStroke = false;
     const e = {};
     if (this.strokeDirty) { e.rect = this.strokeDirty; e.before = this._extract(this.backupD, e.rect, 2); }
     if (this.strokeMaskDirty) { e.mrect = this.strokeMaskDirty; e.mbefore = this._extract(this.backupM, e.mrect, 1); }
-    this.strokeDirty = null; this.strokeMaskDirty = null;
-    if (!e.rect && !e.mrect) return false;
+    if (this.strokeSkinDirty) { e.srect = this.strokeSkinDirty; e.sbefore = this._extract(this.backupS, e.srect, 1); }
+    this.strokeDirty = null; this.strokeMaskDirty = null; this.strokeSkinDirty = null;
+    if (!e.rect && !e.mrect && !e.srect) return null;
     this.history.push(e);
     this.redoStack.length = 0;
     this._trimHistory();
-    return true;
+    return e;
   }
 
   _entryBytes(e) {
     let b = 0;
-    for (const k of ['before', 'after', 'mbefore', 'mafter']) if (e[k]) b += e[k].byteLength;
+    for (const k of ['before', 'after', 'mbefore', 'mafter', 'sbefore', 'safter']) if (e[k]) b += e[k].byteLength;
     return b;
   }
   _trimHistory() {
@@ -125,8 +136,13 @@ class LiquifyField {
       this._inject(this.mask, e.mrect, 1, e.mbefore);
       this.markMaskDirty(e.mrect.x0, e.mrect.y0, e.mrect.x1, e.mrect.y1);
     }
+    if (e.srect) {
+      e.safter = this._extract(this.skin, e.srect, 1);
+      this._inject(this.skin, e.srect, 1, e.sbefore);
+      this.markSkinDirty(e.srect.x0, e.srect.y0, e.srect.x1, e.srect.y1);
+    }
     this.redoStack.push(e);
-    return true;
+    return e;
   }
 
   redo() {
@@ -140,15 +156,33 @@ class LiquifyField {
       this._inject(this.mask, e.mrect, 1, e.mafter);
       this.markMaskDirty(e.mrect.x0, e.mrect.y0, e.mrect.x1, e.mrect.y1);
     }
+    if (e.srect) {
+      this._inject(this.skin, e.srect, 1, e.safter);
+      this.markSkinDirty(e.srect.x0, e.srect.y0, e.srect.x1, e.srect.y1);
+    }
     this.history.push(e);
-    return true;
+    return e;
   }
 
   /** 모두 복원: 변형을 0 으로 (마스크는 유지) */
+  /**
+   * 모두 복원: 변형과 피부 보정을 한 번에 원래대로 (고정 마스크는 보호용이라 유지).
+   * 실행 취소 한 번으로 되살릴 수 있다. 반환한 항목에 앱이 색 보정 값을 덧붙인다.
+   */
   restoreAll() {
     this.beginStroke();
     this.d.fill(0);
+    this.skin.fill(0);
     this.markDirty(0, 0, this.gw, this.gh);
+    this.markSkinDirty(0, 0, this.gw, this.gh);
+    return this.endStroke();
+  }
+
+  /** 피부 보정 영역 모두 지우기 */
+  clearSkin() {
+    this.beginStroke();
+    this.skin.fill(0);
+    this.markSkinDirty(0, 0, this.gw, this.gh);
     return this.endStroke();
   }
 
@@ -190,10 +224,56 @@ class LiquifyField {
     return { sx0, sy0, sw, sh };
   }
 
-  // ---------- 경로 기반 도구 (뒤틀기 / 고정 / 해제) ----------
+  // ---------- 경로 기반 도구 (뒤틀기 / 고정 / 해제 / 피부) ----------
   strokeStart(tool, x, y, o) {
     this.last = { x, y };
-    if (tool === 'freeze' || tool === 'thaw') this.maskStamp(x, y, tool === 'freeze' ? 1 : -1, o);
+    this._stampPath(tool, x, y, 0, 0, o);
+  }
+
+  _stampPath(tool, x, y, stx, sty, o) {
+    if (tool === 'warp') { if (stx || sty) this.warpStamp(x, y, stx, sty, o); }
+    else if (tool === 'freeze' || tool === 'thaw') this.maskStamp(x, y, tool === 'freeze' ? 1 : -1, o);
+    else if (tool === 'skin') this.skinStamp(x, y, o.erase ? -1 : 1, o);
+  }
+
+  /** 출력 좌표 p 에서 원본 좌표 p + d(p) (이중선형) */
+  sourceOf(x, y) {
+    const gw = this.gw, gh = this.gh, d = this.d;
+    const fx = Math.min(gw - 1, Math.max(0, x)), fy = Math.min(gh - 1, Math.max(0, y));
+    const ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy;
+    const ix1 = Math.min(gw - 1, ix + 1), iy1 = Math.min(gh - 1, iy + 1);
+    const a = (iy * gw + ix) * 2, b = (iy * gw + ix1) * 2, c = (iy1 * gw + ix) * 2, e = (iy1 * gw + ix1) * 2;
+    const dx = (d[a] * (1 - tx) + d[b] * tx) * (1 - ty) + (d[c] * (1 - tx) + d[e] * tx) * ty;
+    const dy = (d[a + 1] * (1 - tx) + d[b + 1] * tx) * (1 - ty) + (d[c + 1] * (1 - tx) + d[e + 1] * tx) * ty;
+    return { x: x + dx, y: y + dy };
+  }
+
+  /**
+   * 피부 보정 칠하기(+1)/지우기(−1).
+   * 화면(출력) 좌표로 받은 브러시 중심을 원본 좌표로 옮겨서 칠한다 → 이후 변형을 따라 움직인다.
+   */
+  skinStamp(cx, cy, sign, o) {
+    const s = this.sourceOf(cx, cy);
+    const r = o.radius;
+    const b = this._bbox(s.x, s.y, r);
+    if (!b) return;
+    const skin = this.skin, gw = this.gw;
+    // 겹쳐 쌓지 않고 '가장 진한 값'을 유지 → 한 번 칠하면 고르게 덮이고, 겹친 곳이 얼룩지지 않는다
+    // 압력 50 → 80% 덮임, 100 → 100%
+    const inner = o.density, cov = 0.6 + 0.4 * o.pressure, invR = 1 / r;
+    for (let y = b.y0; y < b.y1; y++) {
+      const py = y - s.y;
+      for (let x = b.x0; x < b.x1; x++) {
+        const px = x - s.x;
+        const t = Math.sqrt(px * px + py * py) * invR;
+        if (t >= 1) continue;
+        const i = y * gw + x;
+        const w = LiquifyField.weight(t, inner) * cov;
+        if (sign > 0) { if (w > skin[i]) skin[i] = w; }
+        else skin[i] *= 1 - w;
+      }
+    }
+    this.markSkinDirty(b.x0, b.y0, b.x1, b.y1);
   }
 
   /**
@@ -211,9 +291,7 @@ class LiquifyField {
     const stx = dx / dist * spacing, sty = dy / dist * spacing;
     const t0 = performance.now();
     for (let i = 1; i <= n; i++) {
-      const nx = lx + stx * i, ny = ly + sty * i;
-      if (tool === 'warp') this.warpStamp(nx, ny, stx, sty, o);
-      else this.maskStamp(nx, ny, tool === 'freeze' ? 1 : -1, o);
+      this._stampPath(tool, lx + stx * i, ly + sty * i, stx, sty, o);
     }
     this.stats.stamps += n;
     this.stats.stampMs += performance.now() - t0;

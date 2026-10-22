@@ -23,6 +23,7 @@
     pucker: '<path d="M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/><circle cx="12" cy="12" r="2"/>',
     bloat: '<path d="M9 9L4 4M15 9l5-5M9 15l-5 5M15 15l5 5"/><circle cx="12" cy="12" r="3"/>',
     twirl: '<path d="M12 12c0-2 2-3 4-2s2 4 0 6-7 2-9-1-1-9 3-11 10-1 12 4"/>',
+    skin: '<path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/><path d="M18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
     freeze: '<path d="M12 3v18M5 7l14 10M5 17L19 7"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2"/>',
     thaw: '<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/><path d="M9 15a3 3 0 0 0 3 3"/>',
     hand: '<path d="M8 12V6a1.5 1.5 0 0 1 3 0v5M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6a1.5 1.5 0 0 1 3 0v8"/><path d="M8 12l-2.2-2.2a1.6 1.6 0 0 0-2.3 2.3L8 17c1.5 2.5 3.5 4 6.5 4 3.3 0 5.5-2.2 5.5-5.5V14"/>',
@@ -35,12 +36,14 @@
     { id: 'bloat', key: 'B', label: '볼록', hint: '바깥쪽으로 부풀립니다' },
     { id: 'twirl', key: 'C', label: '돌리기', hint: '시계 방향 회전 · ⌥ 누르면 반시계' },
     null,
+    { id: 'skin', key: 'K', label: '피부 보정', hint: '피부를 칠하면 매끄러워집니다 · ⌥ 누르면 지우기' },
+    null,
     { id: 'freeze', key: 'F', label: '마스크 고정', hint: '칠한 영역은 변형되지 않습니다' },
     { id: 'thaw', key: 'D', label: '마스크 해제', hint: '고정을 지웁니다' },
     null,
     { id: 'hand', key: 'H', label: '손', hint: '드래그해 화면을 이동합니다 (스페이스+드래그)' },
   ];
-  const PATH_TOOLS = new Set(['warp', 'freeze', 'thaw']);
+  const PATH_TOOLS = new Set(['warp', 'freeze', 'thaw', 'skin']);
   const CONT_TOOLS = new Set(['reconstruct', 'smooth', 'pucker', 'bloat', 'twirl']);
 
   // ---------- 상태 ----------
@@ -51,6 +54,8 @@
     brush: { size: 300, pressure: 50, density: 50, rate: 50 },
     usePen: true,
     color: { exposure: 0, contrast: 0, saturation: 0, temperature: 0 },
+    skin: { amount: 80, grain: 30 },
+    showSkinArea: false,
     showOriginal: false, showMask: true,
     space: false, alt: false,
     pointer: { sx: 0, sy: 0, inside: false, pressure: 1, down: false, mode: null, lastT: 0, pan: null, gx: 0, gy: 0 },
@@ -111,19 +116,30 @@
   for (const row of document.querySelectorAll('.row[data-color]')) {
     bindRow(row, state.color, row.dataset.color, () => requestRender());
   }
-  $('#btn-color-reset').addEventListener('click', () => {
-    state.color = { exposure: 0, contrast: 0, saturation: 0, temperature: 0 };
+  /** 색 보정 값을 설정하고 슬라이더도 맞춘다 */
+  function applyColor(c) {
+    // 슬라이더가 state.color 객체를 직접 참조하므로 객체를 바꿔 끼우지 않고 값만 바꾼다
+    Object.assign(state.color, c);
     for (const row of document.querySelectorAll('.row[data-color]')) {
-      row.querySelector('input[type=range]').value = 0;
-      row.querySelector('input[type=number]').value = 0;
+      const v = state.color[row.dataset.color];
+      row.querySelector('input[type=range]').value = v;
+      row.querySelector('input[type=number]').value = v;
     }
     requestRender();
-  });
+  }
+  $('#btn-color-reset').addEventListener('click', () => applyColor({ exposure: 0, contrast: 0, saturation: 0, temperature: 0 }));
   $('#chk-pen').addEventListener('change', (e) => { state.usePen = e.target.checked; });
   $('#chk-mask').addEventListener('change', (e) => { state.showMask = e.target.checked; requestRender(); });
+  for (const row of document.querySelectorAll('.row[data-skin]')) {
+    bindRow(row, state.skin, row.dataset.skin, () => requestRender());
+  }
+  $('#chk-skin-area').addEventListener('change', (e) => { state.showSkinArea = e.target.checked; requestRender(); });
 
   function setBrushSize(v) { brushCtl.size.set(Math.round(v)); }
 
+  function skinUniforms() {
+    return { amount: state.skin.amount / 100, grain: state.skin.grain / 100 };
+  }
   function colorUniforms() {
     const c = state.color;
     return {
@@ -201,6 +217,9 @@
     renderer.draw({
       offsetX: v.x * dpr, offsetY: v.y * dpr, scale: v.scale * dpr,
       showOriginal: state.showOriginal, showMask: state.showMask, color: colorUniforms(),
+      skin: skinUniforms(),
+      // '칠한 영역 표시'를 켰을 때만 영역을 보여 준다 (칠하는 동안에는 실제 결과를 그대로 보여 줌)
+      showSkin: !state.showOriginal && state.showSkinArea,
     });
   }
   function tick(t) {
@@ -232,7 +251,8 @@
     octx.strokeStyle = 'rgba(40,24,12,0.55)'; octx.stroke();
     octx.lineWidth = 1.25;
     octx.beginPath(); octx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
-    octx.strokeStyle = (state.tool === 'freeze' || state.tool === 'thaw') ? 'rgba(255,90,90,0.95)' : 'rgba(255,255,255,0.95)';
+    octx.strokeStyle = (state.tool === 'freeze' || state.tool === 'thaw') ? 'rgba(255,90,90,0.95)'
+      : state.tool === 'skin' ? (state.alt ? 'rgba(160,160,160,0.95)' : 'rgba(255,191,105,0.98)') : 'rgba(255,255,255,0.95)';
     octx.stroke();
     octx.lineWidth = 1;
     // 중심 십자
@@ -271,6 +291,7 @@
       density: Math.min(0.98, state.brush.density / 100),
       rate: state.brush.rate / 100,
       dir: state.alt ? -1 : 1,
+      erase: state.alt,
     };
   }
 
@@ -364,7 +385,6 @@
 
   // ---------- 키보드 ----------
   // 키 판별은 e.code(물리 키 위치)로 한다 → 한글 입력 상태(ㅈ/ㄱ/ㄷ…)에서도 단축키가 동작
-  const MENU_META_CODES = new Set(['KeyO', 'KeyS', 'KeyZ', 'Equal', 'Minus', 'Digit0', 'Digit1']);
   const isTextField = (el) => el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'number'));
 
   // 슬라이더·체크박스·버튼을 클릭한 뒤 포커스가 남아 단축키를 가로채지 않도록 포커스를 해제
@@ -424,12 +444,8 @@
       if (e.key === 'Enter' || e.key === 'Escape') e.target.blur();
       return;
     }
-    if (e.metaKey || e.ctrlKey) {
-      // ⌘O/⌘S/⌘Z 등은 Electron 메뉴에서 IPC 로 처리 → 여기선 중복 실행하지 않음
-      if (e.code === 'Equal' && e.shiftKey) { e.preventDefault(); zoomCenter(1.25); }
-      else if (MENU_META_CODES.has(e.code)) e.preventDefault();
-      return;
-    }
+    // ⌘ 조합은 메인 프로세스(before-input-event)가 처리한다. 여기서 preventDefault 하면 메뉴 단축키가 막히므로 건드리지 않는다.
+    if (e.metaKey || e.ctrlKey) return;
     if (shortcutDown(e.code, e.shiftKey, e.altKey, e.repeat)) e.preventDefault();
   });
   document.addEventListener('keyup', (e) => {
@@ -453,6 +469,7 @@
   $('#btn-save').addEventListener('click', save);
   $('#btn-restore').addEventListener('click', restoreAll);
   $('#btn-thaw-all').addEventListener('click', thawAll);
+  $('#btn-skin-clear').addEventListener('click', clearSkin);
   $('#btn-undo').addEventListener('click', undo);
   $('#btn-redo').addEventListener('click', redo);
   const cmp = $('#btn-compare');
@@ -469,10 +486,30 @@
     $('#btn-redo').disabled = !(f && f.canRedo);
     $('#history-info').textContent = f ? `실행 취소 ${f.history.length}단계 · 다시 실행 ${f.redoStack.length}단계 (최대 ${f.maxHistory})` : '획 단위 30단계';
   }
-  function undo() { if (state.field && state.field.undo()) { requestRender(); updateHistoryUI(); } }
-  function redo() { if (state.field && state.field.redo()) { requestRender(); updateHistoryUI(); } }
-  function restoreAll() { if (state.field) { state.field.restoreAll(); requestRender(); updateHistoryUI(); } }
+  function undo() {
+    const e = state.field && state.field.undo();
+    if (!e) return;
+    if (e.colorBefore) applyColor(e.colorBefore);
+    requestRender(); updateHistoryUI();
+  }
+  function redo() {
+    const e = state.field && state.field.redo();
+    if (!e) return;
+    if (e.colorAfter) applyColor(e.colorAfter);
+    requestRender(); updateHistoryUI();
+  }
+  /** 모두 복원: 변형·피부 보정·색 보정을 한 번에 원래대로 (⌘Z 한 번으로 되돌릴 수 있음) */
+  function restoreAll() {
+    if (!state.field) return;
+    const colorBefore = { ...state.color };
+    const e = state.field.restoreAll();
+    if (e) { e.colorBefore = colorBefore; e.colorAfter = { exposure: 0, contrast: 0, saturation: 0, temperature: 0 }; }
+    applyColor({ exposure: 0, contrast: 0, saturation: 0, temperature: 0 });
+    requestRender(); updateHistoryUI();
+    setStatusMsg('모두 원래대로 되돌렸습니다 · ⌘Z 로 다시 살릴 수 있어요');
+  }
   function thawAll() { if (state.field) { state.field.thawAll(); requestRender(); updateHistoryUI(); } }
+  function clearSkin() { if (state.field) { state.field.clearSkin(); requestRender(); updateHistoryUI(); } }
 
   // ---------- 메뉴 IPC ----------
   if (window.api) {
@@ -485,6 +522,7 @@
         case 'redo': redo(); break;
         case 'restore': restoreAll(); break;
         case 'thaw-all': thawAll(); break;
+        case 'skin-clear': clearSkin(); break;
         case 'zoom-in': zoomCenter(1.25); break;
         case 'zoom-out': zoomCenter(0.8); break;
         case 'zoom-fit': fitView(); break;
@@ -549,7 +587,7 @@
     $('#file-name').textContent = state.fileName;
     document.title = state.fileName ? `${state.fileName} — 과즙 10%` : '과즙 10%';
     emptyEl.hidden = true;
-    for (const id of ['#btn-save', '#btn-compare', '#btn-restore', '#btn-thaw-all']) $(id).disabled = false;
+    for (const id of ['#btn-save', '#btn-compare', '#btn-restore', '#btn-thaw-all', '#btn-skin-clear']) $(id).disabled = false;
     $('#info-size').textContent = `${state.imgW} × ${state.imgH} px`;
     $('#info-grid').textContent = `변위 그리드 ${state.field.gw} × ${state.field.gh} · ${renderer.dispFormat}`;
     // 브러시 기본 크기: 이미지 긴 변의 8%
@@ -579,7 +617,7 @@
 
   // ---------- 저장 ----------
   async function encodeCurrent(kind) {
-    const { width, height, data } = renderer.renderToPixels(colorUniforms());
+    const { width, height, data } = renderer.renderToPixels(colorUniforms(), skinUniforms());
     const cv = document.createElement('canvas');
     cv.width = width; cv.height = height;
     const ctx = cv.getContext('2d');
@@ -610,6 +648,15 @@
   if (window.api) window.api.ready();
 
   // ---------- 셀프 테스트 (electron . --selftest=<dir>) ----------
+  window.__probeState = () => {
+    const f = state.field;
+    let maxD = 0, maxSkin = 0;
+    for (let i = 0; i < f.d.length; i += 3) { const v = Math.abs(f.d[i]); if (v > maxD) maxD = v; }
+    for (let i = 0; i < f.skin.length; i += 3) if (f.skin[i] > maxSkin) maxSkin = f.skin[i];
+    return { maxD, maxSkin, exposure: state.color.exposure,
+      exposureSlider: Number(document.querySelector('.row[data-color=exposure] input[type=number]').value),
+      undo: f.history.length };
+  };
   window.__selftest = async function (outDir) {
     const report = { ok: true, steps: [] };
     const step = (name, data) => { report.steps.push({ name, ...data }); };
@@ -626,6 +673,16 @@
       for (let x = 0; x <= W; x += 200) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
       for (let y = 0; y <= H; y += 200) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
       ctx.fillStyle = '#f04432'; ctx.beginPath(); ctx.arc(W / 2, H / 2, 400, 0, Math.PI * 2); ctx.fill();
+      // 피부 보정 검사용: 잡티가 있는 피부색 영역 + 눈썹 같은 진한 선 (변형이 닿지 않는 오른쪽 위)
+      const SK = { x0: 3100, y0: 200, x1: 3700, y1: 700, lineY: 450 };
+      ctx.fillStyle = '#e2b093'; ctx.fillRect(SK.x0, SK.y0, SK.x1 - SK.x0, SK.y1 - SK.y0);
+      let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < 2600; i++) {
+        const r = 1.5 + rnd() * 4, v = rnd();
+        ctx.fillStyle = v < 0.5 ? `rgba(150,80,60,${0.35 + v})` : `rgba(255,225,205,${v - 0.2})`;
+        ctx.beginPath(); ctx.arc(SK.x0 + rnd() * (SK.x1 - SK.x0), SK.y0 + rnd() * (SK.y1 - SK.y0), r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#3a2418'; ctx.fillRect(SK.x0 + 60, SK.lineY - 6, SK.x1 - SK.x0 - 120, 12);
       const bmp = await createImageBitmap(cv);
       setImageBitmap(bmp, 'selftest.png', '');
       step('load', { imgW: state.imgW, imgH: state.imgH, grid: [state.field.gw, state.field.gh], dispFormat: renderer.dispFormat });
@@ -689,13 +746,83 @@
       if (undone !== hist - 2 || maxDiff > 1e-6) fail('undo-redo', `hist ${hist}→${undone}, maxDiff ${maxDiff}`);
       else step('undo-redo', { history: hist, maxDiffAfterRedo: maxDiff });
 
+      // 4.5) 피부 보정: 잡티는 줄고 진한 선(경계)은 유지되어야 함
+      {
+        const lumStats = (px, w, x0, y0, x1, y1) => {
+          let s = 0, s2 = 0, n = 0;
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            const i = (y * w + x) * 4; const l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+            s += l; s2 += l * l; n++;
+          }
+          const m = s / n; return { mean: m, std: Math.sqrt(Math.max(0, s2 / n - m * m)) };
+        };
+        const measure = () => {
+          const ex = renderer.renderToPixels(colorUniforms(), skinUniforms());
+          const noise = lumStats(ex.data, ex.width, SK.x0 + 40, SK.y0 + 30, SK.x1 - 40, SK.lineY - 40);
+          const line = lumStats(ex.data, ex.width, SK.x0 + 100, SK.lineY - 3, SK.x1 - 100, SK.lineY + 3);
+          return { noiseStd: noise.std, contrast: noise.mean - line.mean };
+        };
+        const savedColor = { ...state.color };
+        applyColor({ exposure: 0, contrast: 0, saturation: 0, temperature: 0 });
+        const before = measure();
+        // 피부 칠하기 (브러시 300px 로 영역을 지그재그)
+        const so = () => ({ ...strokeOpts(), radius: 150 * f.sx, pressure: 1, density: 0.6, erase: false });
+        f.beginStroke();
+        for (let yy = SK.y0 + 60; yy <= SK.y1 - 60; yy += 120) {
+          f.strokeStart('skin', (SK.x0 + 40) * f.sx, yy * f.sy, so());
+          for (let xx = SK.x0 + 40; xx <= SK.x1 - 40; xx += 20) f.strokeTo('skin', xx * f.sx, yy * f.sy, so());
+        }
+        f.endStroke();
+        // 화면 비교 영역(가운데)에도 조금 칠해 둔다
+        f.beginStroke();
+        f.strokeStart('skin', 1700 * f.sx, 1300 * f.sy, so());
+        for (let xx = 1700; xx <= 2100; xx += 20) f.strokeTo('skin', xx * f.sx, 1300 * f.sy, so());
+        f.endStroke();
+        state.skin = { amount: 80, grain: 30 };
+        const after = measure();
+        const noiseRatio = after.noiseStd / before.noiseStd;
+        const edgeRatio = after.contrast / before.contrast;
+        // 지우기(⌥) 동작
+        const si = (Math.round(450 * f.sy) * f.gw + Math.round(3400 * f.sx));
+        const mBefore = f.skin[si];
+        f.beginStroke(); f.strokeStart('skin', 3400 * f.sx, 450 * f.sy, { ...so(), erase: true }); f.strokeTo('skin', 3420 * f.sx, 450 * f.sy, { ...so(), erase: true }); f.endStroke();
+        const mErased = f.skin[si];
+        f.undo();
+        const mUndo = f.skin[si];
+        applyColor(savedColor);
+        const res = {
+          smoothMs: +renderer.smoothMs.toFixed(1),
+          noiseStd: [+before.noiseStd.toFixed(2), +after.noiseStd.toFixed(2)], noiseRatio: +noiseRatio.toFixed(3),
+          edgeContrast: [+before.contrast.toFixed(1), +after.contrast.toFixed(1)], edgeRatio: +edgeRatio.toFixed(3),
+          mask: { painted: +mBefore.toFixed(2), erased: +mErased.toFixed(2), undo: +mUndo.toFixed(2) },
+        };
+        if (noiseRatio < 0.6 && edgeRatio > 0.8 && mBefore > 0.9 && mErased < mBefore && Math.abs(mUndo - mBefore) < 1e-6) step('skin-smooth', res);
+        else fail('skin-smooth', JSON.stringify(res));
+        // 수동 확인용 잘라낸 이미지
+        const ex = renderer.renderToPixels(colorUniforms(), skinUniforms());
+        const cw = SK.x1 - SK.x0, chh = SK.y1 - SK.y0;
+        const crop = new Uint8ClampedArray(cw * chh * 4);
+        for (let y = 0; y < chh; y++) crop.set(ex.data.subarray(((SK.y0 + y) * ex.width + SK.x0) * 4, ((SK.y0 + y) * ex.width + SK.x1) * 4), y * cw * 4);
+        const cc = document.createElement('canvas'); cc.width = cw; cc.height = chh;
+        cc.getContext('2d').putImageData(new ImageData(crop, cw, chh), 0, 0);
+        const cb = await new Promise((r) => cc.toBlob(r, 'image/png'));
+        await window.api.writeFile(outDir + '/skin-after.png', new Uint8Array(await cb.arrayBuffer()));
+        state.skin = { amount: 0, grain: 35 };
+        const ex0 = renderer.renderToPixels(colorUniforms(), skinUniforms());
+        for (let y = 0; y < chh; y++) crop.set(ex0.data.subarray(((SK.y0 + y) * ex0.width + SK.x0) * 4, ((SK.y0 + y) * ex0.width + SK.x1) * 4), y * cw * 4);
+        cc.getContext('2d').putImageData(new ImageData(crop, cw, chh), 0, 0);
+        const cb0 = await new Promise((r) => cc.toBlob(r, 'image/png'));
+        await window.api.writeFile(outDir + '/skin-before.png', new Uint8Array(await cb0.arrayBuffer()));
+        state.skin = { amount: 80, grain: 30 };
+      }
+
       // 5) 화면 vs 내보내기 비교 (이미지 1px = 백킹 1px 로 맞춤)
-      state.color = { exposure: 0.3, contrast: 15, saturation: 10, temperature: 20 };
+      applyColor({ exposure: 0.3, contrast: 15, saturation: 10, temperature: 20 });
       state.showMask = false;
       state.view.scale = 1 / state.dpr;
       state.view.x = -(1200 / state.dpr); state.view.y = -(900 / state.dpr);   // 변형 영역이 보이게 이동
       render();
-      const exp = renderer.renderToPixels(colorUniforms());
+      const exp = renderer.renderToPixels(colorUniforms(), skinUniforms());
       const rw = Math.min(glCanvas.width, 1200), rh = Math.min(glCanvas.height, 900);
       const scr = renderer.readScreen(0, 0, rw, rh);
       let sum = 0, mx = 0, cnt = 0;
@@ -730,6 +857,7 @@
       const results = {};
       setTool('warp');
       key(document.body, 'KeyR', 'ㄱ'); results.korean_R = state.tool;
+      key(document.body, 'KeyK', 'ㅏ'); results.korean_K = state.tool;
       const range = document.querySelector('.row[data-opt=size] input[type=range]');
       range.focus();
       key(range, 'KeyC', 'ㅊ'); results.rangeFocus_C = state.tool;
@@ -742,7 +870,7 @@
       key(document.body, 'Slash', '?', { shiftKey: true }); results.help_open = !$('#help').hidden;
       key(document.body, 'Escape', 'Escape'); results.help_close = $('#help').hidden;
       setTool('warp');
-      const ok = results.korean_R === 'reconstruct' && results.rangeFocus_C === 'twirl' && results.bracket_grow
+      const ok = results.korean_R === 'reconstruct' && results.korean_K === 'skin' && results.rangeFocus_C === 'twirl' && results.bracket_grow
         && results.numberField_ignored && results.help_open && results.help_close;
       if (ok) step('shortcuts', results); else fail('shortcuts', JSON.stringify(results));
     } catch (err) { fail('shortcuts', String(err)); }

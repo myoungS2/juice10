@@ -67,6 +67,23 @@
       </section>
 
       <section class="group">
+        <h3>피부 보정 <span class="h-key">K</span></h3>
+        <div class="row" data-skin="amount">
+          <label>강도</label>
+          <input type="range" min="0" max="100" step="1">
+          <input type="number" min="0" max="100" step="1">
+        </div>
+        <div class="row" data-skin="grain">
+          <label>질감</label>
+          <input type="range" min="0" max="100" step="1">
+          <input type="number" min="0" max="100" step="1">
+        </div>
+        <label class="check"><input type="checkbox" id="chk-skin-area"> 칠한 영역 표시</label>
+        <button id="btn-skin-clear" class="btn small" disabled>피부 보정 모두 지우기</button>
+        <div class="hint">피부를 칠하면 잡티가 매끄러워집니다. ⌥ 누르고 칠하면 지워집니다. 질감이 높을수록 피부결이 남습니다.</div>
+      </section>
+
+      <section class="group">
         <h3>마스크</h3>
         <label class="check"><input type="checkbox" id="chk-mask" checked> 고정 영역 표시</label>
         <button id="btn-thaw-all" class="btn small" disabled>마스크 모두 해제</button>
@@ -131,6 +148,7 @@
             <dt><kbd>S</kbd></dt><dd>오목</dd>
             <dt><kbd>B</kbd></dt><dd>볼록</dd>
             <dt><kbd>C</kbd></dt><dd>돌리기 · <kbd>⌥</kbd> 누르면 반시계</dd>
+            <dt><kbd>K</kbd></dt><dd>피부 보정 · <kbd>⌥</kbd> 누르면 지우기</dd>
             <dt><kbd>F</kbd></dt><dd>마스크 고정</dd>
             <dt><kbd>D</kbd></dt><dd>마스크 해제</dd>
             <dt><kbd>H</kbd></dt><dd>손 (화면 이동)</dd>
